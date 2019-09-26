@@ -303,32 +303,36 @@ static struct argp argp = {
 
 static int do_raid_rebuild() {
   // target drive index is: rebuild_dev
-  int source_dev = (rebuild_dev + 1) % num_devices; // the other one
-  char buf[block_size];
-  lseek(dev_fd[source_dev], 0, SEEK_SET);
-  lseek(dev_fd[rebuild_dev], 0, SEEK_SET);
 
-  // simple block copy
+  // reconstruction process
+  // read all devices except rebuild_dev and xor them
+  // save result to rebuild device
+
+  /* int source_dev = (rebuild_dev + 1) % num_devices; // the other one */
+  char buf[block_size];
+  char readblock[block_size];
+
+  for (int i = 0; i <= num_devices; i++) {
+    lseek(dev_fd[i], 0, SEEK_SET);
+  }
+
   for (uint64_t cursor = 0; cursor < raid_device_size; cursor += block_size) {
-    int r;
-    r = read(dev_fd[source_dev], buf, block_size);
-    if (r < 0) {
-      perror("rebuild_read");
-      return -1;
-    } else if (r != block_size) {
-      fprintf(stderr, "rebuild_read: short read (%d bytes), offset=%zu\n", r,
-              cursor);
-      return 1;
+    // read every device till block_size
+    memset(buf, 0, block_size);
+    memset(readblock, 0, block_size);
+
+    for (int i = 0; i <= num_devices; i++) {
+      if (i != rebuild_dev) {
+        read(dev_fd[i], readblock, block_size);
+        // xor
+        for (int j = 0; j < block_size; j++) {
+          buf[j] ^= readblock[j];
+        }
+        // xor
+      }
     }
-    r = write(dev_fd[rebuild_dev], buf, block_size);
-    if (r < 0) {
-      perror("rebuild_write");
-      return -1;
-    } else if (r != block_size) {
-      fprintf(stderr, "rebuild_write: short write (%d bytes), offset=%zu\n", r,
-              cursor);
-      return 1;
-    }
+    // buf now contains data to write into rebuild_dev
+    write(dev_fd[rebuild_dev], buf, block_size);
   }
   return 0;
 }
