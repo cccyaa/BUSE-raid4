@@ -94,7 +94,9 @@ static int xmp_read(void *buf, u_int32_t len, u_int64_t offset,
     read_offset = ((offset / block_size) / num_devices) * block_size +
                   (offset % block_size);
 
-    if (degraded && read_device == missing_dev) {
+    if ((degraded) && (read_device == missing_dev)) {
+      fprintf(stderr, "xmp_read: Degraded read: dev: %d,off: %lu\n",
+              read_device, read_offset);
       degraded_read(buf, read_offset);
     } else {
       pread(dev_fd[read_device], buf, block_size, read_offset);
@@ -133,7 +135,7 @@ static int xmp_write(const void *buf, u_int32_t len, u_int64_t offset,
     write_device = (offset / block_size) % num_devices;
     write_offset = ((offset / block_size) / num_devices) * block_size +
                    (offset % block_size);
-    if (degraded && write_device == missing_dev) {
+    if ((degraded) && (write_device == missing_dev)) {
       // write based on parity
       // call xmp_read for degraded bloc
       fprintf(stderr, "xmp_write: Degraded Read\n"); // remove
@@ -145,7 +147,7 @@ static int xmp_write(const void *buf, u_int32_t len, u_int64_t offset,
       }
       // skip pwrite to missing device
       pwrite(dev_fd[parity_device], new_parity, block_size, write_offset);
-    } else if (degraded && parity_device == missing_dev) {
+    } else if ((degraded) && (parity_device == missing_dev)) {
       // if missing device is parity device, just do striping and ignore parity
       pwrite(dev_fd[write_device], buf, block_size, write_offset);
     } else {
@@ -166,17 +168,16 @@ static int xmp_write(const void *buf, u_int32_t len, u_int64_t offset,
       fprintf(stderr, "parity_device: %d: %d\n", parity_device,
               dev_fd[parity_device]); // remove
       pwrite(dev_fd[parity_device], new_parity, block_size, write_offset);
-
-      buf += block_size;
-      offset += block_size;
-      len -= block_size;
-
-      memset(old_data, 0, block_size);
-      memset(old_parity, 0, block_size);
-      memset(new_data, 0, block_size);
-      memset(new_parity, 0, block_size);
-      memset(diff, 0, block_size);
     }
+    buf += block_size;
+    offset += block_size;
+    len -= block_size;
+
+    memset(old_data, 0, block_size);
+    memset(old_parity, 0, block_size);
+    memset(new_data, 0, block_size);
+    memset(new_parity, 0, block_size);
+    memset(diff, 0, block_size);
   }
   free(old_data);
   free(old_parity);
