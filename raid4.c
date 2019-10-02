@@ -38,7 +38,7 @@
             // the feature entirely
 
 int dev_fd[16]; // max. number of allowed devices
-int block_size; // NOTE: other than truncating the resulting raid device,
+u_int32_t block_size; // NOTE: other than truncating the resulting raid device,
                 // block_size is ignored in this program; it is asked for and
                 // set in order to make it easier to adapt this code to
                 // RAID0/4/5/6.
@@ -56,22 +56,22 @@ int parity_device = 0; // The device after num_devices which contains parity
 
 // function to calculate bitwise xor of two blocks of block_size
 static void xor_func(char *result, const char *buf1, const char *buf2) {
-  for (int i = 0; i < block_size; i++) {
+  for (u_int32_t i = 0; i < block_size; i++) {
     result[i] = buf1[i] ^ buf2[i];
   }
 }
 
-static void degraded_read(char *buf, off_t offset) {
+static void degraded_read(char *buf, off_t offset, u_int32_t len) {
   // read all devices except missing device
   // return result of xor in buf
   //  fprintf(stderr, "Degraded Read\n"); // remove
-  char readblock[block_size];
-  char result[block_size];
-  memset(result, 0, block_size);
+  char readblock[len];
+  char result[len];
+  memset(result, 0, len);
   for (int i = 0; i <= num_devices; i++) {
     if (i != missing_dev) {
-      pread(dev_fd[i], readblock, block_size, offset);
-      for (int j = 0; j < block_size; j++) {
+      pread(dev_fd[i], readblock, len, offset);
+      for (u_int32_t j = 0; j < len; j++) {
         result[j] ^= readblock[j];
       }
     }
@@ -88,19 +88,30 @@ static int xmp_read(void *buf, u_int32_t len, u_int64_t offset,
   // choose read device based on block number
   int read_device;
   off_t read_offset;
+  u_int32_t read_len = len;
 
   while (len > 0) {
+    read_len = (len < block_size)? len : block_size;
     read_device = (offset / block_size) % num_devices;
     read_offset = ((offset / block_size) / num_devices) * block_size +
                   (offset % block_size);
 
+    /* read_device = (offset / block_size) % num_devices; */
+    /* read_offset = offset / num_devices; */
+
     if ((degraded) && (read_device == missing_dev)) {
-      fprintf(stderr, "xmp_read: Degraded read: dev: %d,off: %lu\n",
+      if (verbose)
+	fprintf(stderr, "xmp_read: Degraded read: dev: %d,off: %lu\n",
               read_device, read_offset);
-      degraded_read(buf, read_offset);
+      degraded_read(buf, read_offset, read_len);
     } else {
+      if (len < block_size){
+	pread(dev_fd[read_device], buf, len, read_offset);
+	return 0;
+      }
       pread(dev_fd[read_device], buf, block_size, read_offset);
     }
+    
     buf += block_size;
     offset += block_size;
     len -= block_size;
@@ -125,6 +136,8 @@ static int xmp_write(const void *buf, u_int32_t len, u_int64_t offset,
   char *new_data = malloc(block_size);
   char *diff = malloc(block_size);
 
+  u_int32_t write_len = 0;
+
   memset(old_data, 0, block_size);
   memset(old_parity, 0, block_size);
   memset(new_data, 0, block_size);
@@ -132,43 +145,56 @@ static int xmp_write(const void *buf, u_int32_t len, u_int64_t offset,
   memset(diff, 0, block_size);
 
   while (len > 0) {
+    write_len = (len < block_size) ? len : block_size;
     write_device = (offset / block_size) % num_devices;
     write_offset = ((offset / block_size) / num_devices) * block_size +
                    (offset % block_size);
+    /* write_device = (offset / block_size) % num_devices; */
+    /* write_offset = offset / num_devices; */
+
     if ((degraded) && (write_device == missing_dev)) {
       // write based on parity
       // call xmp_read for degraded bloc
-      fprintf(stderr, "xmp_write: Degraded Read\n"); // remove
+      if (verbose)
+	fprintf(stderr, "xmp_write: Degraded Read\n"); // remove
       memcpy(new_data, buf, block_size);
-      degraded_read(old_data, write_offset);
-      pread(dev_fd[parity_device], old_parity, block_size, write_offset);
-      for (int i = 0; i < block_size; i++) {
+      degraded_read(old_data, write_offset, write_len);
+      pread(dev_fd[parity_device], old_parity, write_len, write_offset);
+      
+      for (u_int32_t i = 0; i < write_len; i++) {
         new_parity[i] = (old_data[i] ^ new_data[i]) ^ old_parity[i];
       }
       // skip pwrite to missing device
-      pwrite(dev_fd[parity_device], new_parity, block_size, write_offset);
+      pwrite(dev_fd[parity_device], new_parity, write_len, write_offset);
     } else if ((degraded) && (parity_device == missing_dev)) {
       // if missing device is parity device, just do striping and ignore parity
-      pwrite(dev_fd[write_device], buf, block_size, write_offset);
+      pwrite(dev_fd[write_device], buf, write_len, write_offset);
     } else {
       /* calculate new parity and update */
       memcpy(new_data, buf, block_size);
-      pread(dev_fd[write_device], old_data, block_size, write_offset);
-      pread(dev_fd[parity_device], old_parity, block_size, write_offset);
+      pread(dev_fd[write_device], old_data, write_len, write_offset);
+      pread(dev_fd[parity_device], old_parity, write_len, write_offset);
       /* xor_func(diff, old_data, new_data); */
       /* xor_func(new_parity, diff, old_parity); */
-      for (int i = 0; i < block_size; i++) {
+      for (u_int32_t i = 0; i < write_len; i++) {
         new_parity[i] = (old_data[i] ^ new_data[i]) ^ old_parity[i];
       }
-      fprintf(stderr, "new-parity: %s\n", new_parity); // remove
+      if (verbose)
+	fprintf(stderr, "new-parity: %s\n", new_parity); // remove
       // write new block at write_offset to write_device
-      pwrite(dev_fd[write_device], new_data, block_size,
+      pwrite(dev_fd[write_device], new_data, write_len,
              write_offset); // buf -> new_data
       // write new block at write_offset to parity_device
-      fprintf(stderr, "parity_device: %d: %d\n", parity_device,
+      if (verbose)
+	fprintf(stderr, "parity_device: %d: %d\n", parity_device,
               dev_fd[parity_device]); // remove
-      pwrite(dev_fd[parity_device], new_parity, block_size, write_offset);
+      pwrite(dev_fd[parity_device], new_parity, write_len, write_offset);
     }
+
+    if (len < block_size){
+      break;
+    }
+    
     buf += block_size;
     offset += block_size;
     len -= block_size;
@@ -331,7 +357,7 @@ static int do_raid_rebuild() {
       if (i != rebuild_dev) {
         read(dev_fd[i], readblock, block_size);
         // xor
-        for (int j = 0; j < block_size; j++) {
+        for (u_int32_t j = 0; j < block_size; j++) {
           buf[j] ^= readblock[j];
         }
         // xor
